@@ -1,0 +1,501 @@
+#include <iostream>
+#include <fstream>
+#include <ios>
+#include <vector>
+#include <set>
+#include <list>
+#include <unordered_set>
+#include <random>
+#include <chrono>
+#include <queue>
+#include <algorithm>
+#include <thread>
+#include <cstring>
+
+const size_t DATASET_BUFFER_SIZE   = 10;
+const size_t FILE_NAME_BUFFER_SIZE = 100;
+const int    FILE_START_IDX        = 1;
+
+const int    RANDOM_SEED           = 0;
+const int    NUMBER_SYSTEM         = 10;
+//const int    FILE_FINISH_IDX       = 1218;
+const int    FILE_FINISH_IDX       = 10;
+const int    MAX_TRY               = 3;
+const char   SPLIT_CHAR            = ',';
+const char   WARP_CHAR             = '\n';
+const char   ZERO_CHAR             = '0';
+const char   STRING_END_CHAR       = '\0';
+
+const int    HU_MAX_NODE_ID           = 1576 + 1;
+const int    SH_MAX_NODE_ID           = 2213 + 1;
+const int    TEST_MAX_NODE_ID         = 2213 + 1;
+const int    MAX_NODE_ID              = 5001;
+
+const char   OUTPUT_DIR[]          = "output";
+const char   INPUT_FILE_FORMAT[]   = "./%s/%ld.csv";
+const char   OUTPUT_FILE_FORMAT[]  = "./%s/%ld.csv";
+const char   RESULT_FILE_FORMAT[]  = "./%s_%d.txt";
+
+const char   PROCESS_FULL_FORMAT[] = "[%s] %s";
+const char   PROCESS_DES_FORMAT[]  = "%zd / %zd - %.2lf s - %.2lf s/iter";
+const char   PROCESS_BAR_FULL_CHAR = '=';
+const char   PROCESS_BAR_NULL_CHAR = ' ';
+const size_t PROCESS_BAR_LENGTH    = 20;
+const size_t PROCESS_DES_LENGTH    = 40;
+const size_t PROCESS_FULL_LENGTH   = 70;
+
+const char   ARG_INFO[]            = "-d <dataset> [-t <thread num>] [-n <task num>]";
+
+typedef int                            Node;
+struct Edge
+{
+    Node from;
+    Node to;
+    Edge() {}
+    Edge(Node from, Node to)
+    {
+        this->from = from;
+        this->to   = to;
+    }
+    bool operator < (const Edge &edge) const
+    {
+        if (this->from < edge.from)
+            return true;
+        if (this->from > edge.from)
+            return false;
+        return this->to < edge.to;
+    }
+    bool operator == (const Edge &edge) const
+    {
+        return this->from == edge.from && this->to == edge.to;
+    }
+};
+typedef std::vector<std::vector<int> > Distribution;
+typedef std::vector<Edge>              Edges;
+
+struct Info
+{
+    Node node;
+    int value;
+    Info() {}
+    Info(Node node, int value)
+    {
+        this->node  = node;
+        this->value = value;
+    }
+    bool operator < (const Info &info) const
+    {
+        return this->value < info.value;
+    }
+};
+
+struct EdgeHash{
+    size_t operator()(const Edge& edge) const
+    {
+        size_t hash_value = edge.from * MAX_NODE_ID + edge.to;
+        return hash_value;
+    }
+};
+
+template <typename T>
+T get_max(std::vector<T> &array, size_t begin, size_t end)
+{
+    T num = array[begin];
+    for (size_t i = begin + 1; i < end; i++)
+    {
+        if (array[i] > num)
+            num = array[i];
+    }
+    return num;
+}
+
+class ProcessBar
+{
+private:
+    size_t total;
+    size_t cur;
+    
+    std::chrono::high_resolution_clock::time_point start_time;
+    std::chrono::high_resolution_clock::time_point last_update;
+public:
+    ProcessBar(size_t total)
+    {
+        this->total       = total;
+        this->cur         = 0;
+        this->start_time  = std::chrono::high_resolution_clock::now();
+        this->last_update = this->start_time;
+    }
+    ProcessBar(size_t start, size_t total)
+    {
+        this->total       = total;
+        this->cur         = start;
+        this->start_time  = std::chrono::high_resolution_clock::now();
+        this->last_update = this->start_time;
+    }
+    void update(size_t step)
+    {
+        this->cur += step;
+        this->last_update = std::chrono::high_resolution_clock::now();
+        
+        char* bar     = new char[PROCESS_BAR_LENGTH + 1];
+        char* des     = new char[PROCESS_DES_LENGTH];
+        char* full    = new char[PROCESS_FULL_LENGTH];
+        
+        int   bar_loc = (double)this->cur * PROCESS_BAR_LENGTH / this->total + 0.5;
+        ssize_t i = 0;
+        for (; i < bar_loc; i++)
+            bar[i] = PROCESS_BAR_FULL_CHAR;
+        for (; i < PROCESS_BAR_LENGTH; i++)
+            bar[i] = PROCESS_BAR_NULL_CHAR;
+        bar[PROCESS_BAR_LENGTH] = STRING_END_CHAR;
+        
+        std::chrono::duration<double> period = this->last_update - this->start_time;
+        double speed  = period.count() / this->cur;
+        
+        sprintf(des,  PROCESS_DES_FORMAT,  this->cur, this->total, period.count(), speed);
+        sprintf(full, PROCESS_FULL_FORMAT, bar, des);
+        
+        std::cout << full << std::endl;
+    }
+};
+
+void read(const char *file_name, Edges &edges)
+{
+    std::ifstream reader(file_name, std::ios::binary);
+    ssize_t       length = reader.seekg(0, std::ios::end).tellg();
+    char*         buffer = new char[length];
+    
+    reader.seekg(0, std::ios::beg).read(buffer, static_cast<std::streamsize>(length));
+    reader.close();
+    
+    for (size_t i = 0; i < length; i++)
+    {
+        Node from = 0;
+        Node to   = 0;
+        
+        size_t j = i;
+        for (; buffer[j] != SPLIT_CHAR; j++)
+            from = from * NUMBER_SYSTEM + buffer[j] - ZERO_CHAR;
+        
+        j += 1;
+        for (; buffer[j] != WARP_CHAR && j < length; j++)
+            to = to * NUMBER_SYSTEM + buffer[j] - ZERO_CHAR;
+        
+        edges.push_back(Edge(from, to));
+        i = j;
+    }
+    
+    delete[] buffer;
+}
+
+void read_all(std::vector<Edges> &days, char* dataset)
+{
+    char* file_name = new char[FILE_NAME_BUFFER_SIZE];
+    
+    //ProcessBar bar(FILE_FINISH_IDX - FILE_START_IDX + 1);
+    for (ssize_t idx = FILE_START_IDX; idx <= FILE_FINISH_IDX; idx++)
+    {
+        std::vector<Edge> edges;
+        sprintf(file_name, INPUT_FILE_FORMAT, dataset, idx);
+        read(file_name, edges);
+        days.push_back(edges);
+        //bar.update(1);
+    }
+    
+    delete[] file_name;
+}
+
+void get_distribution(Edges &edges, Distribution &disturbution_in, Distribution &disturbution_out, int &max_node)
+{
+    std::vector<int> in(max_node);
+    std::vector<int> out(max_node);
+    for(Edge &edge : edges)
+    {
+        out[edge.from] += 1;
+        in[edge.to] += 1;
+    }
+    
+    ssize_t in_size  = get_max<int>(in,  1, max_node) + 1;
+    ssize_t out_size = get_max<int>(out, 1, max_node) + 1;
+    disturbution_in.resize(in_size);
+    disturbution_out.resize(out_size);
+    for (size_t idx = 1; idx < max_node; idx++)
+    {
+        disturbution_in.at(in[idx]).push_back(idx);
+        disturbution_out.at(out[idx]).push_back(idx);
+    }
+}
+
+void get_map(Distribution &disturbution, std::vector<std::pair<int, int> > &node_loc, int &max_node)
+{
+    node_loc.resize(max_node);
+    
+    for (size_t i = 0; i < disturbution.size(); i++)
+        for (size_t j = 0; j < disturbution[i].size(); j++)
+            node_loc[disturbution[i][j]] = std::pair<int, int>(i, j);
+}
+
+void init_queue(Distribution &disturbution, std::vector<Node> &nodes, std::default_random_engine &random_engin)
+{
+    for (size_t i = 1; i < disturbution.size() ; i++)
+        for (size_t j = 0; j < disturbution[i].size(); j++)
+            for (size_t k = 0; k < i; k++)
+                nodes.push_back(disturbution[i][j]);
+    std::shuffle(nodes.begin(), nodes.end(), random_engin);
+}
+
+void generate(Distribution &disturbution_in, Distribution &disturbution_out, Edges& edges, std::unordered_set<Edge, EdgeHash> &new_edges, std::default_random_engine &random_engin, int &max_node)
+{
+    std::vector<std::pair<int, int> > node_loc_in;
+    std::vector<std::pair<int, int> > node_loc_out;
+    //std::vector<Info> trash;
+    //std::priority_queue<Info> nodes_in;
+    //std::vector<std::pair<int, int> > nodes_out;
+    std::vector<Node> nodes_in;
+    std::vector<Node> nodes_out;
+    
+    std::vector<int> node_map(max_node);
+    
+    get_map(disturbution_in,  node_loc_in, max_node);
+    get_map(disturbution_out, node_loc_out, max_node);
+        
+    for (size_t idx = 0; idx < max_node; idx++)
+        node_map[idx] = idx;
+    std::shuffle(node_map.begin() + 1,  node_map.end(),  random_engin);
+    
+    init_queue(disturbution_out, nodes_out, random_engin);
+    init_queue(disturbution_in, nodes_in,  random_engin);
+    
+    for (size_t i = 0; i < nodes_out.size(); i++)
+        new_edges.insert(Edge(node_map[nodes_out[i]], node_map[nodes_in[i]]));
+    
+}
+
+void write(const char *file_name, std::vector<double> acc)
+{
+    std::ofstream writer(file_name);
+    for (double value : acc)
+        writer << value << WARP_CHAR;
+    writer.close();
+}
+
+bool check_distribution(Edges edges1, Edges edges2, int &max_node)
+{
+    Distribution disturbution_in1;
+    Distribution disturbution_out1;
+    Distribution disturbution_in2;
+    Distribution disturbution_out2;
+    
+    get_distribution(edges1, disturbution_in1, disturbution_out1, max_node);
+    get_distribution(edges2, disturbution_in2, disturbution_out2, max_node);
+    
+    if (disturbution_in1.size() != disturbution_in2.size())
+        return false;
+    if (disturbution_out1.size() != disturbution_out2.size())
+        return false;
+    for (size_t idx = 0; idx < disturbution_in1.size(); idx++)
+        if (disturbution_in1[idx].size() != disturbution_in2[idx].size())
+        return false;
+    for (size_t idx = 0; idx < disturbution_out1.size(); idx++)
+        if (disturbution_out1[idx].size() != disturbution_out2[idx].size())
+        return false;
+    return true;
+}
+
+void generate_all(std::vector<Edges> &days, std::default_random_engine &random_engin, std::vector<double> &acc, int &max_node)
+{
+    char* file_name = new char[FILE_NAME_BUFFER_SIZE];
+    
+    std::vector<std::vector<int> > max_lead(max_node);
+    std::vector<std::vector<int> > cur_lead(max_node);
+    for (ssize_t idx = 0; idx < max_node; idx++)
+    {
+        max_lead[idx].resize(max_node);
+        cur_lead[idx].resize(max_node);
+    }
+    std::unordered_set<Edge, EdgeHash>    acc_edges;
+    std::vector<std::unordered_set<Edge, EdgeHash>::iterator> earsed_edges;
+    
+    //ProcessBar bar(days.size());
+    size_t file_idx = FILE_START_IDX;
+    for (ssize_t idx = 0; idx < days.size(); idx++)
+    {
+        Distribution      disturbution_in;
+        Distribution      disturbution_out;
+        std::unordered_set<Edge, EdgeHash>    new_edges;
+        std::unordered_set<Edge, EdgeHash>    cur_edges;
+        
+        get_distribution(days[idx], disturbution_in, disturbution_out, max_node);
+        generate(disturbution_in, disturbution_out, days[idx], new_edges, random_engin, max_node);
+        
+        //sprintf(file_name, OUTPUT_FILE_FORMAT, OUTPUT_DIR, file_idx);
+        //file_idx++;
+        //write(file_name, new_edges);
+        
+        earsed_edges.clear();
+        for (const Edge &edge : new_edges)
+        {
+            cur_lead[edge.from][edge.to] += 1;
+            if (cur_lead[edge.from][edge.to] > max_lead[edge.from][edge.to])
+                max_lead[edge.from][edge.to] = cur_lead[edge.from][edge.to];
+            cur_edges.insert(edge);
+        }
+        for (std::unordered_set<Edge, EdgeHash>::iterator edge_it = acc_edges.begin(); edge_it != acc_edges.end(); ++edge_it)
+        {
+            if (cur_edges.count(*edge_it) == 0)
+            {
+                cur_lead[edge_it->from][edge_it->to] = 0;
+                earsed_edges.push_back(edge_it);
+            }
+        }
+        for (std::unordered_set<Edge, EdgeHash>::iterator &edge_it : earsed_edges)
+            acc_edges.erase(edge_it);
+        for (const Edge &edge : new_edges)
+            acc_edges.insert(edge);
+    
+        //bar.update(1);
+    }
+    
+    acc.resize(days.size());
+    int max_lead_num = 0;
+    for (size_t i = 1; i < max_node; i++)
+    {
+        for (size_t j = 1; j < max_node; j++)
+        {
+            acc[max_lead[i][j]] += 1;
+            max_lead_num = (max_lead_num < max_lead[i][j]) ? max_lead[i][j] : max_lead_num;
+        }
+    }
+    for (size_t i = 1; i < max_lead_num; i++)
+        acc[i] = acc[i] + acc[i - 1];
+        
+    for (size_t i = 0; i < max_lead_num; i++)
+        acc[i] = acc[i] / ((max_node - 1) * (max_node - 1));
+    size_t length = acc.size();
+    for (size_t i = max_lead_num; i < length; i++)
+        acc.pop_back();
+}
+
+void func(const int task_id, char* dataset, int max_node)
+{
+    char* file_name = new char[FILE_NAME_BUFFER_SIZE];
+    
+    std::default_random_engine random_engin(task_id);
+    
+    std::vector<Edges> days;
+    std::vector<double> acc;
+    
+    read_all(days, dataset);
+    
+    generate_all(days, random_engin, acc, max_node);
+    
+    sprintf(file_name, RESULT_FILE_FORMAT, dataset, task_id);
+    write(file_name, acc);
+}
+
+void submit(char* dataset, int &task_num, int &thread_num, int &max_node)
+{
+    std::vector<std::thread> pool;
+    ProcessBar bar(task_num);
+    for (size_t i = 0; i < task_num; )
+    {
+        pool.clear();
+        for (size_t k = 0; k < thread_num && i + k < task_num; k++)
+            pool.push_back(std::thread(func, i + k, dataset, max_node));
+        for (size_t k = 0; k < thread_num && i + k < task_num; k++)
+        {
+            pool[k].join();
+            bar.update(1);
+        }
+        i += pool.size();
+    }
+}
+
+void check_param(int argc, char *argv[], char* dataset, int &task_num, int &thread_num, int &max_node)
+{
+    bool found_name = false;
+    bool error = false;
+    for (size_t i = 1; i < argc; i++)
+    {
+        int c = -1;
+        if (strcmp(argv[i], "-d") == 0)
+            c = 0;
+        if (strcmp(argv[i], "-t") == 0)
+            c = 1;
+        if (strcmp(argv[i], "-n") == 0)
+            c = 2;
+        switch(c)
+        {
+            case 0:
+                if (i + 1 >= argc || strlen(argv[i + 1]) >= DATASET_BUFFER_SIZE)
+                {
+                    error = true;
+                    break;
+                }
+                strcpy(dataset, argv[i + 1]);
+                if (strcmp(dataset, "hu") == 0)
+                    max_node = HU_MAX_NODE_ID;
+                else
+                {
+                    if (strcmp(dataset, "sh") == 0)
+                        max_node = SH_MAX_NODE_ID;
+                    else
+                        error = true;
+                }
+                found_name = true;
+                i++;
+                break;
+            case 1:
+                if (i + 1 >= argc)
+                {
+                    error = true;
+                    break;
+                }
+                thread_num = atoi(argv[i + 1]);
+                if (thread_num < 0)
+                {
+                    error = true;
+                    break;
+                }
+                i++;
+                break;
+            case 2:
+                if (i + 1 >= argc)
+                {
+                    error = true;
+                    break;
+                }
+                task_num = atoi(argv[i + 1]);
+                if (task_num < 0)
+                {
+                    error = true;
+                    break;
+                }
+                i++;
+                break;
+            default:
+                error = true;
+                break;
+        }
+        
+    }
+    if (error || !found_name)
+    {
+        std::cout << ARG_INFO << std::endl;
+        exit(-1);
+    }
+}
+
+int main(int argc, char *argv[])
+{
+    char* dataset  = new char[DATASET_BUFFER_SIZE];
+    int task_num   = 0;
+    int thread_num = 0;
+    int max_node   = 0;
+    
+    check_param(argc, argv, dataset, task_num, thread_num, max_node);
+    
+    submit(dataset, task_num, thread_num, max_node);
+    
+    return 0;
+}
